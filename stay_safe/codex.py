@@ -249,8 +249,8 @@ class Reader:
         if not isinstance(policy, dict):
             self.gap(f"{label} must be a table.")
             return
-        if self.unknown(policy, {"inherit", "ignore_default_excludes"}, label):
-            return
+        self.unknown(policy, {"inherit", "ignore_default_excludes"}, label)
+        
         inherit = policy.get("inherit", "all")
         ignore = policy.get("ignore_default_excludes", True)
         inherit_valid = isinstance(inherit, str) and inherit in {"all", "core", "none"}
