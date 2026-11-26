@@ -1,7 +1,7 @@
 import re
 
 from .claude import (AUTO_APPROVAL_UNSET, AUTO_MODE_GAP, COMMAND_BLANK, COMMAND_MISSING, COMMAND_NON_TEXT, COMMAND_OBJECT,
-                     COMMAND_DISABLE_SOURCE, COMMAND_SUPPRESSED, COMMAND_TYPE, HELPER_USE, HTTP, PROJECT, UNKNOWN_EVENT, UNREAD_ENABLE, decides, read_file,
+                     COMMAND_DISABLE_SOURCE, COMMAND_SUPPRESSED, COMMAND_TYPE, HELPER_USE, HTTP, LOCAL_COMMAND_SCOPE, PROJECT, UNKNOWN_EVENT, UNREAD_ENABLE, decides, read_file,
                      WORKSPACE_COMMANDS, resolve, runs)
 from .provenance import GAP, REPOSITORY, fingerprints, identify, source_link
 from .rules import evaluate
@@ -36,6 +36,7 @@ WHAT = {
         "Keep it if you trust the address. Stricter: remove the HTTP hook, or set `allowedHttpHookUrls` to the "
         "addresses you trust.",
 }
+LOCAL_COMMAND_USE = {"processWrapper": 'On macOS and Linux, Claude Code 2.1.210 or later can use `processWrapper` when it starts another Claude Code process, including a background session or a split-pane teammate. If you set `CLAUDE_CODE_PROCESS_WRAPPER`, Claude Code uses that launcher instead.'}
 HEADLINES = {
     ("commands_without_prompts", None):
         "This file selects bypassPermissions, which can skip permission prompts. "
@@ -149,7 +150,7 @@ GAPS = {
     **{f"{name} {reason}": (
         f"**Not checked: `{name}`.** {description}",
         f"Set `{name}` to the command you want Claude Code to run, or remove the setting.")
-       for name in HELPER_USE for reason, description in (
+       for name in (*HELPER_USE, "processWrapper") for reason, description in (
            ("is blank. There is no command to check.", "The value is blank. There is no command to check."),
            ("has a non-text value. Claude Code expects a command written as text.",
             "The value is not text. Claude Code expects a command written as text."))},
@@ -272,6 +273,11 @@ def headline(risk):
     observations = risk["configured_evidence"]
     if risk["rule"] == "configured_program":
         name = risk["entry"].partition(":")[2]
+        if name in LOCAL_COMMAND_SCOPE:
+            lead = LOCAL_COMMAND_USE[name]
+            if LOCAL_COMMAND_SCOPE[name] in observations:
+                lead += " " + LOCAL_COMMAND_SCOPE[name]
+            return lead
         if name in WORKSPACE_COMMANDS:
             return (f"After you trust the workspace, Claude Code can run the command in `{name}` to "
                     f"{WORKSPACE_COMMANDS[name]}. Trust inherited from a parent folder also counts.")
@@ -430,7 +436,7 @@ def markdown(report, files=None):
         source, _, name = risk["entry"].partition(":")
         path = f"`{files[source]}`" if source in files else f"`<{source}>`"
         lead, how, step = finding(risk, path, name.rsplit(".", 1)[-1], report.get("_hooks", {}).get(risk["entry"]))
-        titles.append(f"`{name}`" if name in HELPER_USE or name in WORKSPACE_COMMANDS else lead[2:].split("**", 1)[0])
+        titles.append(f"`{name}`" if name in HELPER_USE or name in WORKSPACE_COMMANDS or name in LOCAL_COMMAND_SCOPE else lead[2:].split("**", 1)[0])
         citations = ", ".join(f"[{i}]({report['incident_links'][i]})" if i in report["incident_links"] else i
                               for i in risk["incidents"])
         rule = f"`{risk['rule']}`"

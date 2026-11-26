@@ -48,7 +48,8 @@ COMMAND_SUPPRESSED = ("The settings checked set disableAllHooks to true. The {} 
                       "higher-priority setting changes disableAllHooks to false. Check .claude/settings.local.json, "
                       "any --settings used to start Claude Code, and your organization's managed settings. "
                       "Managed settings can also supply their own command.")
-PROGRAM_SETTINGS = {"hooks", "disableAllHooks", "allowedHttpHookUrls", *HELPER_USE, *WORKSPACE_COMMANDS}
+LOCAL_COMMAND_SCOPE = {"processWrapper": "Claude Code uses `processWrapper` only in user or managed settings."}
+PROGRAM_SETTINGS = {"hooks", "disableAllHooks", "allowedHttpHookUrls", *HELPER_USE, *WORKSPACE_COMMANDS, *LOCAL_COMMAND_SCOPE}
 COMMAND = "command withheld"
 DISABLED = "turned off by disableAllHooks in this file"
 UNREAD_ENABLE = ("disableAllHooks turns off the hooks found, but .claude/settings.local.json, managed settings and "
@@ -206,8 +207,11 @@ class SettingsReader(Reader):
                 self.gap(problem.format(name))
                 continue
             self.add([name], "program", [], {"configured_program": True, "project": self.scope == "project"})
-        for name in HELPER_USE:
+        for name in (*HELPER_USE, *LOCAL_COMMAND_SCOPE):
             if name not in data:
+                continue
+            if name in LOCAL_COMMAND_SCOPE and self.scope == "project":
+                self.add([name], "program", ["Claude Code ignores `processWrapper` in `.claude/settings.json`."], {"configured_program": False})
                 continue
             value = data[name]
             if not isinstance(value, str):
@@ -217,6 +221,8 @@ class SettingsReader(Reader):
                 self.gap(f"{name} is blank. There is no command to check.")
                 continue
             observations = [COMMAND] + ([PROJECT] if self.scope == "project" else [])
+            if name in LOCAL_COMMAND_SCOPE and self.scope is None:
+                observations.append(LOCAL_COMMAND_SCOPE[name])
             self.add([name], "program", observations, {"configured_program": True})
 
     def handlers(self, value):
