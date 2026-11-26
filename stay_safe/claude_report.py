@@ -1,7 +1,7 @@
 import re
 
 from .claude import (AUTO_APPROVAL_UNSET, AUTO_MODE_GAP, COMMAND_BLANK, COMMAND_MISSING, COMMAND_NON_TEXT, COMMAND_OBJECT,
-                     COMMAND_DISABLE_SOURCE, COMMAND_SUPPRESSED, COMMAND_TYPE, HELPER_USE, HTTP, PROJECT, UNKNOWN_EVENT, UNREAD_ENABLE, decides, read_file,
+                     COMMAND_DISABLE_SOURCE, COMMAND_SUPPRESSED, COMMAND_TYPE, HELPER_USE, HTTP, LOCAL_COMMAND_SCOPE, SSH_CONFIG_SCOPE, SSH_HOOKS_GAP, PROJECT, UNKNOWN_EVENT, UNREAD_ENABLE, decides, read_file,
                      WORKSPACE_COMMANDS, resolve, runs)
 from .provenance import GAP, REPOSITORY, fingerprints, identify, source_link
 from .rules import evaluate
@@ -36,6 +36,8 @@ WHAT = {
         "Keep it if you trust the address. Stricter: remove the HTTP hook, or set `allowedHttpHookUrls` to the "
         "addresses you trust.",
 }
+LOCAL_COMMAND_USE = {"sshHostCommands": 'When you select a configured SSH connection to create a machine, Claude Desktop can run the connection’s `command` on your computer. Desktop connects to the host the command prints. Creating another machine for the same connection can run the command again.',
+                     "processWrapper": 'On macOS and Linux, Claude Code 2.1.210 or later can use `processWrapper` when it starts another Claude Code process, including a background session or a split-pane teammate. If you set `CLAUDE_CODE_PROCESS_WRAPPER`, Claude Code uses that launcher instead.'}
 HEADLINES = {
     ("commands_without_prompts", None):
         "This file selects bypassPermissions, which can skip permission prompts. "
@@ -106,6 +108,11 @@ GAPS = {
     "Settings file is missing, unreadable, a symlink, or not a JSON object; raw errors were withheld.": (
         "**Not checked: the settings file.** stay-safe couldn't read it as a JSON object. It doesn't follow symlinks.",
         "Check that the file exists, is readable and holds a JSON object, or pass its target with `--config`."),
+    SSH_CONFIG_SCOPE: ("**Only SSH connection IDs were checked in `sshConfigs`.**",
+                       "Review the host and other fields in each `sshConfigs` entry separately."),
+    "sshHostCommands must be a list of connection entries.": (
+        "**Check `sshHostCommands`.** Claude Desktop expects a list of connections.",
+        "Put each connection in its own object with an `id`, a `name` and a `command`."),
     **{problem.format(name): (
         f"**Check `{name}` in this file.** {reason.format(name)}", repair.format(name))
        for name in WORKSPACE_COMMANDS for problem, reason, repair in (
@@ -149,7 +156,7 @@ GAPS = {
     **{f"{name} {reason}": (
         f"**Not checked: `{name}`.** {description}",
         f"Set `{name}` to the command you want Claude Code to run, or remove the setting.")
-       for name in HELPER_USE for reason, description in (
+       for name in (*HELPER_USE, "processWrapper") for reason, description in (
            ("is blank. There is no command to check.", "The value is blank. There is no command to check."),
            ("has a non-text value. Claude Code expects a command written as text.",
             "The value is not text. Claude Code expects a command written as text."))},
@@ -191,7 +198,7 @@ def inspect(paths, *, discovered=False, gaps=(), scopes=()):
     for risk in risks:
         entry = by_id[risk["entry"]]
         risk["configured_evidence"] = list(entry["observations"])
-        risk["explanation"] = hook_headline(risk["rule"], entry["facts"]) if entry["kind"] == "hook" else headline(risk)
+        risk["explanation"] = hook_headline(risk["rule"], entry["facts"]) if entry["kind"] == "hook" else headline(risk, entry["facts"])
         if risk["rule"] == "commands_without_prompts":
             risk["explanation"] += sandbox_mode_change(entry["source"], by_id, gaps)
         risk["rule_source"] = source_link(revision, "stay_safe/rules.py")
@@ -268,10 +275,29 @@ def hook_headline(rule, facts):
     return lead
 
 
-def headline(risk):
+def connection_positions(positions):
+    if len(positions) == 1:
+        return f"connection {positions[0]}"
+    return "connections " + ", ".join(str(position) for position in positions[:-1]) + f" and {positions[-1]}"
+
+
+def headline(risk, facts):
     observations = risk["configured_evidence"]
     if risk["rule"] == "configured_program":
         name = risk["entry"].partition(":")[2]
+        if name in LOCAL_COMMAND_SCOPE:
+            lead = LOCAL_COMMAND_USE[name]
+            if "ssh_invalid_positions" in facts:
+                positions = facts["ssh_configured_positions"]
+                valid = connection_positions(positions)
+                invalid = connection_positions(facts["ssh_invalid_positions"])
+                action = "specifies a command" if len(positions) == 1 else "specify commands"
+                appears = "appears" if len(positions) == 1 else "appear"
+                lead = (f"{valid.capitalize()} {action}. Fix {invalid}, then check whether {valid} {appears} "
+                        "in Claude Desktop’s environment selector.")
+            if LOCAL_COMMAND_SCOPE[name] in observations:
+                lead += " " + LOCAL_COMMAND_SCOPE[name]
+            return lead
         if name in WORKSPACE_COMMANDS:
             return (f"After you trust the workspace, Claude Code can run the command in `{name}` to "
                     f"{WORKSPACE_COMMANDS[name]}. Trust inherited from a parent folder also counts.")
@@ -352,6 +378,10 @@ def finding(risk, path, number, details=None):
         field = f"{name}.command" if name in WORKSPACE_COMMANDS else name
         check = (f"*Check:* Read the command in `{field}` in {path}. If it calls a script, read that script "
                  "before you trust it.")
+        if name == "sshHostCommands":
+            why = "Changing an entry’s command or the script it calls changes what Desktop can run on your computer."
+            check = (f"*Check:* Read the `command` field in each connection under `sshHostCommands` in {path}. "
+                     "If it calls a script, read that script before you trust it.")
         if PROJECT in risk["configured_evidence"]:
             check += " In a git repository, `git log -p -- .claude/` shows who changed the settings and scripts there."
     elif rule == "commands_without_prompts":
@@ -372,6 +402,15 @@ def gap(text, files, entries, gaps):
     if not (separator and source.startswith("settings-")):
         source, message = None, text
     lead_step = GAPS.get(message)
+    if message == SSH_HOOKS_GAP:
+        location = files.get(source) or source
+        lead_step = (f"**`{location}` sets `disableAllHooks` to `true`.** That setting can prevent Claude Desktop "
+                     "from running your SSH connection commands.",
+                     "Check your hook settings and your organization's hook policy in Claude Desktop.")
+    elif message.startswith("Connection ") and " in sshHostCommands " in message:
+        diagnosis, repair = message.split(". ", 1)
+        diagnosis = re.sub(r"\b(sshHostCommands|sshConfigs|id|name|command)\b", r"`\1`", diagnosis)
+        lead_step = (f"**{diagnosis}.**", repair)
     if lead_step is None and message.startswith("Settings outside reader coverage were not evaluated: "):
         names = message.removeprefix("Settings outside reader coverage were not evaluated: ").removesuffix(".")
         lead_step = (f"**Not checked: other settings.** stay-safe doesn't yet read these settings: {names}.",
@@ -430,7 +469,7 @@ def markdown(report, files=None):
         source, _, name = risk["entry"].partition(":")
         path = f"`{files[source]}`" if source in files else f"`<{source}>`"
         lead, how, step = finding(risk, path, name.rsplit(".", 1)[-1], report.get("_hooks", {}).get(risk["entry"]))
-        titles.append(f"`{name}`" if name in HELPER_USE or name in WORKSPACE_COMMANDS else lead[2:].split("**", 1)[0])
+        titles.append(f"`{name}`" if name in HELPER_USE or name in WORKSPACE_COMMANDS or name in LOCAL_COMMAND_SCOPE else lead[2:].split("**", 1)[0])
         citations = ", ".join(f"[{i}]({report['incident_links'][i]})" if i in report["incident_links"] else i
                               for i in risk["incidents"])
         rule = f"`{risk['rule']}`"

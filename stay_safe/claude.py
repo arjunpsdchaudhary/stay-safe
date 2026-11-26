@@ -48,7 +48,14 @@ COMMAND_SUPPRESSED = ("The settings checked set disableAllHooks to true. The {} 
                       "higher-priority setting changes disableAllHooks to false. Check .claude/settings.local.json, "
                       "any --settings used to start Claude Code, and your organization's managed settings. "
                       "Managed settings can also supply their own command.")
-PROGRAM_SETTINGS = {"hooks", "disableAllHooks", "allowedHttpHookUrls", *HELPER_USE, *WORKSPACE_COMMANDS}
+SSH_CONFIG_SCOPE = "Only connection IDs in sshConfigs were checked for conflicts with sshHostCommands."
+SSH_HOOKS_GAP = ("disableAllHooks is set to true. That setting can prevent Claude Desktop from running "
+                 "your SSH connection commands.")
+SSH_FIELDS = {"id": "the connection identifier", "name": "the display name",
+              "command": "the program and arguments that print the SSH host"}
+LOCAL_COMMAND_SCOPE = {"sshHostCommands": "Claude Desktop reads `sshHostCommands` from your user settings or from a managed file or policy on your computer.",
+                       "processWrapper": "Claude Code uses `processWrapper` only in user or managed settings."}
+PROGRAM_SETTINGS = {"hooks", "disableAllHooks", "allowedHttpHookUrls", *HELPER_USE, *WORKSPACE_COMMANDS, *LOCAL_COMMAND_SCOPE}
 COMMAND = "command withheld"
 DISABLED = "turned off by disableAllHooks in this file"
 UNREAD_ENABLE = ("disableAllHooks turns off the hooks found, but .claude/settings.local.json, managed settings and "
@@ -94,6 +101,10 @@ class SettingsReader(Reader):
         self.programs(data)
         resolve(self.entries, False)
         others = set(data) - {"permissions", "sandbox"} - PREFERENCES - PROGRAM_SETTINGS
+        if ("sshConfigs" in others and self.scope != "project" and isinstance(data.get("sshHostCommands"), list)
+                and isinstance(data["sshConfigs"], list)):
+            others.remove("sshConfigs")
+            self.gap(SSH_CONFIG_SCOPE)
         if others:
             names = sorted(others & NAMED)
             if others - NAMED:
@@ -206,8 +217,13 @@ class SettingsReader(Reader):
                 self.gap(problem.format(name))
                 continue
             self.add([name], "program", [], {"configured_program": True, "project": self.scope == "project"})
-        for name in HELPER_USE:
+        if "sshHostCommands" in data:
+            self.ssh_host_commands(data["sshHostCommands"], data.get("sshConfigs"), data.get("disableAllHooks") is True)
+        for name in (*HELPER_USE, "processWrapper"):
             if name not in data:
+                continue
+            if name in LOCAL_COMMAND_SCOPE and self.scope == "project":
+                self.add([name], "program", ["Claude Code ignores `processWrapper` in `.claude/settings.json`."], {"configured_program": False})
                 continue
             value = data[name]
             if not isinstance(value, str):
@@ -217,7 +233,69 @@ class SettingsReader(Reader):
                 self.gap(f"{name} is blank. There is no command to check.")
                 continue
             observations = [COMMAND] + ([PROJECT] if self.scope == "project" else [])
+            if name in LOCAL_COMMAND_SCOPE and self.scope is None:
+                observations.append(LOCAL_COMMAND_SCOPE[name])
             self.add([name], "program", observations, {"configured_program": True})
+
+    def ssh_host_commands(self, value, ssh_configs, hooks_disabled):
+        name = "sshHostCommands"
+        if self.scope == "project":
+            self.add([name], "program", ["Claude Desktop ignores `sshHostCommands` in `.claude/settings.json`."], {"configured_program": False})
+            return
+        if not isinstance(value, list):
+            self.gap("sshHostCommands must be a list of connection entries.")
+            return
+        reserved = {entry["id"] for entry in ssh_configs if isinstance(entry, dict) and nonempty(entry.get("id"))
+                    } if isinstance(ssh_configs, list) else set()
+        configured = []
+        invalid = []
+        counts = {}
+        for entry in value:
+            if isinstance(entry, dict) and nonempty(entry.get("id")):
+                identifier = entry["id"]
+                counts[identifier] = counts.get(identifier, 0) + 1
+        for position, entry in enumerate(value, 1):
+            subject = f"Connection {position} in sshHostCommands"
+            if not isinstance(entry, dict):
+                invalid.append(position)
+                self.gap(f"{subject} must be a JSON object. Give the connection an id, a name and a command.")
+                continue
+            problems = []
+            for field, meaning in SSH_FIELDS.items():
+                if field not in entry:
+                    problems.append(f"is missing {field}. Add {meaning}.")
+                elif not nonempty(entry[field]):
+                    problems.append(f"needs text in {field}. Enter {meaning} as a nonblank string.")
+            identifier = entry.get("id")
+            if nonempty(identifier):
+                if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}", identifier):
+                    problems.append("has an invalid id. Use up to 64 ASCII letters, digits, dots, underscores or "
+                                    "hyphens, starting with a letter or digit.")
+                elif counts[identifier] > 1:
+                    problems.append("shares an id with another connection. Give each connection a unique id.")
+                if identifier in reserved:
+                    problems.append("uses an ID already present in sshConfigs. Give the connection a unique ID.")
+            label = entry.get("name")
+            if nonempty(label) and (len(label) > 200 or label.splitlines() != [label]):
+                problems.append("has an invalid name. Use one line of up to 200 characters for the display name.")
+            for problem in problems:
+                self.gap(f"{subject} {problem}")
+            if problems:
+                invalid.append(position)
+            else:
+                configured.append(position)
+        if configured:
+            observations = [COMMAND]
+            if hooks_disabled:
+                observations.append("disableAllHooks is true in this file")
+                self.gap(SSH_HOOKS_GAP)
+            if self.scope is None:
+                observations.append(LOCAL_COMMAND_SCOPE[name])
+            facts = {"configured_program": not hooks_disabled}
+            if invalid:
+                facts["ssh_configured_positions"] = configured
+                facts["ssh_invalid_positions"] = invalid
+            self.add([name], "program", observations, facts)
 
     def handlers(self, value):
         if not isinstance(value, dict):

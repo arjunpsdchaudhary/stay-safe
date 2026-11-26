@@ -119,6 +119,11 @@ def unresolved_home_alias(target, home):
             unicodedata.normalize("NFD", target[1].casefold()) == unicodedata.normalize("NFD", home[1].casefold()))
 
 
+ENV_UNCHECKED = "final environment not checked"
+ENV_GAP = ("Additional shell_environment_policy fields were not evaluated. Stay-safe could not determine "
+           "which variables commands receive.")
+
+
 class Reader:
     def __init__(self, source, workspace=None):
         self.source = source
@@ -249,8 +254,9 @@ class Reader:
         if not isinstance(policy, dict):
             self.gap(f"{label} must be a table.")
             return
-        self.unknown(policy, {"inherit", "ignore_default_excludes"}, label)
-        
+        unchecked = bool(policy.keys() - {"inherit", "ignore_default_excludes"})
+        if unchecked:
+            self.gap(ENV_GAP)
         inherit = policy.get("inherit", "all")
         ignore = policy.get("ignore_default_excludes", True)
         inherit_valid = isinstance(inherit, str) and inherit in {"all", "core", "none"}
@@ -263,6 +269,8 @@ class Reader:
             return
         observations = [f"{key}: {value} ({'explicit' if key in policy else 'default'})"
                         for key, value in (("inherit", inherit), ("ignore_default_excludes", str(ignore).lower()))]
+        if unchecked:
+            observations.append(ENV_UNCHECKED)
         self.add([label], "permission", observations,
                  {"environment_inheritance": inherit == "all"})
 

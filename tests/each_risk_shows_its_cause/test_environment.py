@@ -72,20 +72,12 @@ class EnvironmentInheritanceTests(ConfigCase):
         table = 'config-1: shell_environment_policy must be a table.'
         inherit = 'config-1: shell_environment_policy.inherit is unsupported or invalid; its value was withheld.'
         excludes = 'config-1: shell_environment_policy.ignore_default_excludes has an invalid boolean; its behavior is unknown.'
-        extra = 'config-1: shell_environment_policy contains fields outside reader coverage; their values were withheld.'
         for policy, gap in [
             *[('shell_environment_policy=' + value, table) for value in ('"private-value"', '[]', 'false')],
             *[('[shell_environment_policy]\ninherit=' + value, inherit)
               for value in ('"private-value"', '"ALL"', 'true', '1', '[]', '{}')],
             *[('[shell_environment_policy]\nignore_default_excludes=' + value, excludes)
               for value in ('"private-value"', '1', '0', '[]', '{}')],
-            *[('[shell_environment_policy]\n' + field, extra)
-              for field in ('exclude=[]', 'include_only=[]', 'set={}', 'filters={}', 'experimental_use_profile=false',
-                            'exclude=["PRIVATE_NAME"]', 'include_only=["PRIVATE_NAME"]',
-                            'set={PRIVATE_NAME="private-value"}', 'filters={PRIVATE_NAME="exclude"}',
-                            'experimental_use_profile=true',
-                            '"PRIVATE_NAME"="private-value"')],
-            ('[shell_environment_policy]\ninherit="all"\nignore_default_excludes=true\nexclude=[]', extra),
         ]:
             with self.subTest(policy=policy):
                 report = inspect([self.config('approval_policy="never"\nsandbox_mode="read-only"\n' + policy)])
@@ -94,6 +86,34 @@ class EnvironmentInheritanceTests(ConfigCase):
                 self.assertEqual(report['inspection_gaps'], [gap])
                 self.assertNotIn('PRIVATE_NAME', render(report))
                 self.assertNotIn('private-value', render(report, 'json'))
+
+    def test_extra_fields_preserve_the_starting_policy_and_leave_the_final_environment_unknown(self):
+        gap = ("Additional shell_environment_policy fields were not evaluated. Stay-safe could not determine "
+               "which variables commands receive.")
+        for field in ('exclude=[]', 'include_only=[]', 'set={}', 'filters={}', 'experimental_use_profile=false',
+                      'exclude=["PRIVATE_NAME"]', 'include_only=["PRIVATE_NAME"]', 'set={PRIVATE_NAME="private-value"}',
+                      'filters={PRIVATE_NAME="exclude"}', 'experimental_use_profile=true', '"PRIVATE_NAME"="private-value"'):
+            for inherit in (None, "all", "core", "none"):
+                with self.subTest(field=field, inherit=inherit):
+                    policy = '[shell_environment_policy]\n' + field
+                    if inherit:
+                        policy += f'\ninherit="{inherit}"\nignore_default_excludes=false'
+                    report = inspect([self.config(BASE + policy)])
+                    self.assertEqual(report["inspection_gaps"], ["config-1: " + gap])
+                    observations = report["catalog"][-1]["observations"]
+                    expected = ([f"inherit: {inherit} (explicit)", "ignore_default_excludes: false (explicit)"]
+                                if inherit else DEFAULTS)
+                    self.assertEqual(observations, expected + ["final environment not checked"])
+                    self.assertEqual([r["rule"] for r in report["risks"]],
+                                     ["environment_inheritance"] if inherit in (None, "all") else [])
+                    markdown = render(report)
+                    if report["risks"]:
+                        self.assertIn(gap, report["risks"][0]["explanation"])
+                        self.assertNotIn(MARKDOWN_LEAD, markdown)
+                    self.assertIn(gap, markdown)
+                    for text in (markdown, render(report, "json")):
+                        self.assertNotIn("PRIVATE_NAME", text)
+                        self.assertNotIn("private-value", text)
 
     def test_rejected_files_never_gain_default_entries(self):
         missing = self.root / 'missing.toml'

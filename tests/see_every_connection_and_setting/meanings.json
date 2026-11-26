@@ -588,7 +588,7 @@
     "config": "approval_policy=\"on-request\"\nsandbox_mode=\"read-only\"\n[shell_environment_policy]\nexclude=[]",
     "entry": "shell_environment_policy",
     "gaps": [
-      "shell_environment_policy contains fields outside reader coverage; their values were withheld."
+      "Additional shell_environment_policy fields were not evaluated. Stay-safe could not determine which variables commands receive."
     ]
   },
   {
