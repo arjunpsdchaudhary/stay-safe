@@ -119,9 +119,10 @@ def unresolved_home_alias(target, home):
             unicodedata.normalize("NFD", target[1].casefold()) == unicodedata.normalize("NFD", home[1].casefold()))
 
 
-ENV_UNCHECKED = "final environment not checked"
-ENV_GAP = ("Additional shell_environment_policy fields were not evaluated. Stay-safe could not determine "
-           "which variables commands receive.")
+ENV_GAP = ("stay-safe doesn't read the other fields under [shell_environment_policy], "
+           "so it can't tell which variables commands receive.")
+ENV_EXTRA = ("This file also sets other fields under [shell_environment_policy] that can remove "
+             "some of these variables; stay-safe doesn't read them.")
 
 
 class Reader:
@@ -270,9 +271,10 @@ class Reader:
         observations = [f"{key}: {value} ({'explicit' if key in policy else 'default'})"
                         for key, value in (("inherit", inherit), ("ignore_default_excludes", str(ignore).lower()))]
         if unchecked:
-            observations.append(ENV_UNCHECKED)
+            observations.append(ENV_EXTRA)
         self.add([label], "permission", observations,
-                 {"environment_inheritance": inherit == "all"})
+                 {"environment_inheritance": inherit == "all",
+                  "unchecked_fields": unchecked})
 
     def tool_approval(self, mode, applies, label, report_invalid=True):
         default = mode is None

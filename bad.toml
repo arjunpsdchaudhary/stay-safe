@@ -1,0 +1,5 @@
+# bad.toml   (adds a key that Codex supports)
+[shell_environment_policy]
+inherit = "core"
+ignore_default_excludes = false
+exclude = ["AWS_*", "AZURE_*"]
